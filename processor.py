@@ -1,4 +1,5 @@
 import os
+import re
 from groq import Groq
 from youtube_transcript_api import YouTubeTranscriptApi
 from googleapiclient.discovery import build
@@ -14,23 +15,35 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 youtube = build('youtube', 'v3', developerKey=YT_API_KEY)
 
+def extract_video_id(url):
+    """
+    Extracts the video ID from various YouTube URL formats.
+    Handles youtu.be, youtube.com/watch?v=, and youtube.com/embed/
+    """
+    pattern = r'(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})'
+    match = re.search(pattern, url)
+    return match.group(1) if match else None
+
 def get_video_metadata(video_id):
     """Fetches title and thumbnail from YouTube API"""
-    request = youtube.videos().list(part="snippet", id=video_id)
-    response = request.execute()
-    if response['items']:
-        data = response['items'][0]['snippet']
-        return {
-            "title": data['title'],
-            "thumbnail": data['thumbnails']['high']['url'],
-            "description": data['description']
-        }
+    try:
+        request = youtube.videos().list(part="snippet", id=video_id)
+        response = request.execute()
+        if response['items']:
+            data = response['items'][0]['snippet']
+            return {
+                "title": data['title'],
+                "thumbnail": data['thumbnails']['high']['url'],
+                "description": data['description']
+            }
+    except Exception as e:
+        print(f"YouTube API Error: {e}")
     return None
 
 def extract_tools_with_ai(text_content):
     """Uses Groq Llama 3.1 to find tool names in the text"""
-    if not text_content:
-        return ["No tools found"]
+    if not text_content or len(text_content) < 20:
+        return ["AI Tools"]
 
     prompt = f"""
     Analyze the following text from a YouTube video. 
@@ -39,34 +52,38 @@ def extract_tools_with_ai(text_content):
     Text: {text_content[:8000]}
     """
     
-    completion = groq_client.chat.completions.create(
-        model="llama-3.1-8b-instant",  # Updated to the current supported model
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return completion.choices[0].message.content.split(",")
+    try:
+        completion = groq_client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return completion.choices[0].message.content.split(",")
+    except:
+        return ["AI Tools"]
 
 def process_video(video_url):
     try:
-        # Extract ID from URL
-        video_id = video_url.split("v=")[-1].split("&")[0]
+        # 1. Robust ID Extraction
+        video_id = extract_video_id(video_url)
+        if not video_id:
+            return "❌ Error: Invalid YouTube URL format."
         
-        # 1. Get Metadata
+        # 2. Get Metadata
         meta = get_video_metadata(video_id)
         if not meta:
-            return "Error: Could not find video metadata."
+            return f"❌ Error: Could not find metadata for ID: {video_id}. Check if your YouTube API Key is correct."
         
-        # 2. Get Transcript (Fallback to Description if transcript fails)
+        # 3. Get Transcript
         try:
             transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
             text_for_ai = " ".join([t['text'] for t in transcript_list])
         except:
-            # If no transcript, use the video description instead
             text_for_ai = meta['description']
 
-        # 3. Extract Tools via Groq AI
+        # 4. AI Extraction
         tools_found = extract_tools_with_ai(text_for_ai)
         
-        # 4. Save to Supabase
+        # 5. Save to Supabase
         supabase.table("videos").upsert({
             "video_id": video_id,
             "title": meta['title'],
@@ -75,7 +92,7 @@ def process_video(video_url):
             "ai_summary": ", ".join(tools_found)
         }).execute()
         
-        return f"✅ Success! Added: {meta['title']}. Tools identified: {', '.join(tools_found)}"
+        return f"✅ Success! Added: {meta['title']}"
     
     except Exception as e:
-        return f"❌ Error processing video: {str(e)}"
+        return f"❌ System Error: {str(e)}"
