@@ -2,79 +2,88 @@ import streamlit as st
 from supabase import create_client
 import os
 
-# 1. Setup Connection to Supabase
+# Setup
 url = os.getenv("SUPABASE_URL")
 key = os.getenv("SUPABASE_KEY")
 supabase = create_client(url, key)
 
-# 2. UI Styling (Dark Theme & Professional Look)
 st.set_page_config(page_title="AI Tutorial Hub", layout="wide")
 
+# CSS for a modern Look
 st.markdown("""
     <style>
     .main { background-color: #0e1117; }
-    .tool-card {
-        border: 1px solid #30363d;
-        padding: 15px;
-        border-radius: 10px;
-        background: #161b22;
-        margin-bottom: 10px;
-    }
-    .affiliate-btn {
-        background-color: #238636;
-        color: white !important;
-        padding: 8px 20px;
-        text-decoration: none;
-        border-radius: 5px;
-        font-weight: bold;
-        display: inline-block;
-    }
+    .tool-card { border: 1px solid #30363d; padding: 15px; border-radius: 10px; background: #161b22; margin-bottom: 10px; text-align: center; }
+    .affiliate-btn { background-color: #238636; color: white !important; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; display: block; margin-top: 10px; }
+    .search-bar { margin-bottom: 30px; }
     </style>
 """, unsafe_allow_html=True)
 
-# 3. Sidebar - Admin Panel (To add new videos)
+# --- SIDEBAR: DISCOVERY & LINKS ---
 with st.sidebar:
-    st.title("⚙️ Admin Panel")
-    new_video_url = st.text_input("Paste YouTube URL to Add:")
-    if st.button("Process & Add Video"):
-        with st.spinner("AI is analyzing the video..."):
-            # This calls the processor logic we built in Sprint 3
-            from processor import process_video 
-            result = process_video(new_video_url)
-            st.success(result)
+    st.title("⚙️ Creator Studio")
+    
+    # NEW: YOUTUBE DISCOVERY
+    st.subheader("🔎 Discover Tutorials")
+    topic = st.text_input("Topic (e.g. 'Midjourney'):")
+    num_to_add = st.slider("Number of videos to import", 1, 10, 3)
+    
+    if st.button("Search & Import"):
+        with st.spinner(f"Finding and analyzing {num_to_add} videos..."):
+            from processor import search_and_bulk_add
+            reports = search_and_bulk_add(topic, max_results=num_to_add)
+            for r in reports:
+                st.write(r)
+            st.rerun()
 
-# 4. Main View - Tutorial Gallery
+    st.divider()
+    
+    st.subheader("🔗 Link Manager")
+    m_tool = st.text_input("Tool Name:")
+    m_link = st.text_input("Affiliate Link:")
+    if st.button("Save Link"):
+        supabase.table("affiliate_tools").upsert({"tool_name": m_tool, "affiliate_link": m_link}).execute()
+        st.success("Link Saved!")
+
+# --- MAIN PAGE: CLIENT SEARCH & GALLERY ---
 st.title("🚀 Global AI Tutorial Hub")
-st.write("Master AI tools with curated tutorials and direct access to software.")
 
-# Fetch videos from Supabase
-videos = supabase.table("videos").select("*").order("date_added", desc=True).execute()
+# CLIENT SEARCH BAR
+client_search = st.text_input("🔍 Search for a tool or tutorial (e.g. 'Claude' or 'Faceless video')", placeholder="What do you want to learn today?", key="main_search")
 
-if not videos.data:
-    st.info("No videos added yet. Use the Admin Panel to add your first AI tutorial!")
+# DATA FETCHING
+links_data = supabase.table("affiliate_tools").select("tool_name, affiliate_link").execute()
+affiliate_map = {item['tool_name'].lower().strip(): item['affiliate_link'] for item in links_data.data}
+
+# Logic to filter videos based on client search
+if client_search:
+    # Searches titles OR the AI-detected tools in Supabase
+    videos = supabase.table("videos").select("*").or_(f"title.ilike.%{client_search}%,ai_summary.ilike.%{client_search}%").execute()
 else:
-    # Create a grid layout
+    videos = supabase.table("videos").select("*").order("date_added", desc=True).execute()
+
+# DISPLAY GALLERY
+if videos.data:
+    st.write(f"Showing {len(videos.data)} tutorials")
     for video in videos.data:
         col1, col2 = st.columns([2, 1])
-        
         with col1:
             st.video(f"https://www.youtube.com/watch?v={video['video_id']}")
             st.subheader(video['title'])
-        
         with col2:
             st.write("### 🛠️ Tools Used")
-            # Fetch tools linked to this video
-            # (Note: In a full version, we'd join tables, but let's start simple)
-            st.markdown(f"""
-                <div class="tool-card">
-                    <h4>Featured Tool</h4>
-                    <p>Get started with the AI tool used in this video.</p>
-                    <a href="#" class="affiliate-btn">Get Started Free</a>
-                </div>
-            """, unsafe_allow_html=True)
+            raw_tools = video.get('ai_summary', '')
+            if raw_tools:
+                for tool in list(set([t.strip() for t in raw_tools.split(",")])):
+                    link = affiliate_map.get(tool.lower())
+                    if link:
+                        st.markdown(f'<div class="tool-card"><strong>{tool}</strong><a href="{link}" class="affiliate-btn" target="_blank">Get {tool}</a></div>', unsafe_allow_html=True)
+                    else:
+                        st.info(f"Detected: {tool}")
             
             st.divider()
-            st.write("### 📚 Digital Products")
-            st.info("Grab our 'Master Prompt Library' for $25 / ₦20,000")
-            st.link_button("Buy on Selar", "https://selar.co/yourlink")
+            st.write("📚 **Premium Guide**")
+            st.link_button("Buy Prompt Pack", "https://selar.co/yourlink")
         st.divider()
+else:
+    st.warning("No tutorials found for that search. Try another keyword!")
