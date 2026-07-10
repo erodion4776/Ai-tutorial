@@ -1,100 +1,141 @@
 import streamlit as st
 from supabase import create_client
 import os
+from processor import process_video, search_and_bulk_add
 
-# Setup
-url = os.getenv("SUPABASE_URL")
-key = os.getenv("SUPABASE_KEY")
-supabase = create_client(url, key)
+# 1. INITIALIZE CONNECTION
+URL = os.getenv("SUPABASE_URL")
+KEY = os.getenv("SUPABASE_KEY")
+supabase = create_client(URL, KEY)
 
-st.set_page_config(page_title="AI Tutorial Hub", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="AI HUB | Admin Console", layout="wide", page_icon="⚙️")
 
-# Modern UI Styling
+# Custom CSS for a clean Admin UI
 st.markdown("""
     <style>
-    .main { background-color: #0e1117; }
-    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
-    .stTabs [data-baseweb="tab"] {
-        background-color: #161b22;
-        border-radius: 5px;
-        color: white;
-        padding: 10px 20px;
-    }
-    .stTabs [aria-selected="true"] { background-color: #238636 !important; }
-    .category-tag {
-        background: #21262d;
-        color: #58a6ff;
-        padding: 2px 8px;
-        border-radius: 10px;
-        font-size: 12px;
-        border: 1px solid #30363d;
-    }
-    .tool-card { border: 1px solid #30363d; padding: 15px; border-radius: 10px; background: #161b22; margin-bottom: 10px; }
-    .affiliate-btn { background-color: #238636; color: white !important; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; display: block; text-align: center; margin-top: 10px; }
+    .stButton>button { width: 100%; border-radius: 8px; height: 3em; background-color: #10b981; color: white; border: none; }
+    .stTextInput>div>div>input { border-radius: 8px; }
+    .report-card { padding: 15px; border-radius: 10px; background-color: #1e293b; border: 1px solid #334155; margin-bottom: 10px; }
     </style>
 """, unsafe_allow_html=True)
 
-# --- SIDEBAR: DISCOVERY ---
-with st.sidebar:
-    st.title("👨‍💻 Admin")
-    topic = st.text_input("Find New Tutorials:", placeholder="e.g. Logo Design")
-    if st.button("Discovery & Import"):
-        from processor import search_and_bulk_add
-        search_and_bulk_add(topic)
-        st.rerun()
+# --- SIDEBAR NAVIGATION ---
+st.sidebar.title("🚀 AI Hub Admin")
+menu = st.sidebar.radio("Navigate to:", ["Discovery & Import", "Link Manager", "Roadmap Architect", "Tutorial Library"])
+
+# --- FEATURE 1: DISCOVERY & BULK IMPORT ---
+if menu == "Discovery & Import":
+    st.header("🔎 Video Discovery & AI Processing")
+    st.write("Search YouTube for top tutorials. The AI will categorize, extract tools, and write SEO blogs automatically.")
     
-    st.divider()
-    st.subheader("🔗 Link Manager")
-    m_tool = st.text_input("Tool Name:")
-    m_link = st.text_input("Link:")
-    if st.button("Save Link"):
-        supabase.table("affiliate_tools").upsert({"tool_name": m_tool, "affiliate_link": m_link}).execute()
-        st.success("Saved!")
-
-# --- MAIN PAGE ---
-st.title("🚀 Global AI Tutorial Hub")
-st.write("Browse the world's best AI tutorials, categorized and ready for use.")
-
-# 1. Fetch Category List and Links
-links_data = supabase.table("affiliate_tools").select("tool_name, affiliate_link").execute()
-affiliate_map = {item['tool_name'].lower().strip(): item['affiliate_link'] for item in links_data.data}
-
-# 2. Category Navigation
-available_categories = ["All", "Image Generation", "Video & Animation", "Automation & Workflow", "AI Writing & Chat", "Coding & Tech", "Voice & Audio"]
-selected_cat = st.tabs(available_categories)
-
-# 3. Handle Filtering and Display
-for i, cat_name in enumerate(available_categories):
-    with selected_cat[i]:
-        # Build Query
-        query = supabase.table("videos").select("*")
-        if cat_name != "All":
-            query = query.eq("category", cat_name)
-        
-        videos = query.order("date_added", desc=True).execute()
-
-        if videos.data:
-            for video in videos.data:
-                col1, col2 = st.columns([2, 1])
-                with col1:
-                    st.video(f"https://www.youtube.com/watch?v={video['video_id']}")
-                    st.markdown(f"<span class='category-tag'>{video['category']}</span>", unsafe_allow_html=True)
-                    st.subheader(video['title'])
-                
-                with col2:
-                    st.write("### 🛠️ Featured Tools")
-                    raw_tools = video.get('ai_summary', '')
-                    if raw_tools:
-                        for tool in list(set([t.strip() for t in raw_tools.split(",")])):
-                            link = affiliate_map.get(tool.lower())
-                            if link:
-                                st.markdown(f'<div class="tool-card"><strong>{tool}</strong><a href="{link}" class="affiliate-btn" target="_blank">Try {tool}</a></div>', unsafe_allow_html=True)
-                            else:
-                                st.info(f"Tool: {tool}")
-                    
-                    st.divider()
-                    st.write("📚 **Premium Prompt Pack**")
-                    st.link_button("Buy Library (₦20,000)", "https://selar.co/yourlink")
-                st.divider()
+    col1, col2 = st.columns([2,1])
+    with col1:
+        keyword = st.text_input("Enter Topic Keywords", placeholder="e.g. AI Faceless YouTube Channel")
+    with col2:
+        count = st.slider("Videos to process", 1, 10, 3)
+    
+    if st.button("Start Bulk Discovery"):
+        if keyword:
+            with st.spinner(f"AI is hunting for '{keyword}' tutorials..."):
+                reports = search_and_bulk_add(keyword, max_results=count)
+                for r in reports:
+                    st.info(r)
+                st.success("Batch Processing Complete!")
         else:
-            st.info(f"No videos in {cat_name} yet. Use the sidebar to import some!")
+            st.warning("Please enter a keyword first.")
+
+    st.divider()
+    st.subheader("🔗 Manual Video Addition")
+    single_url = st.text_input("Paste specific YouTube URL:")
+    if st.button("Process Single Video"):
+        with st.spinner("Analyzing video..."):
+            res = process_video(single_url)
+            st.success(res)
+
+# --- FEATURE 2: LINK MANAGER ---
+elif menu == "Link Manager":
+    st.header("🔗 Affiliate Link Manager")
+    st.write("Manage the links that appear on your beautiful Netlify frontend.")
+
+    with st.expander("➕ Add/Update Affiliate Link", expanded=True):
+        t_name = st.text_input("Tool Name (e.g. ElevenLabs)")
+        t_link = st.text_input("Your Affiliate URL")
+        if st.button("Save to Database"):
+            if t_name and t_link:
+                supabase.table("affiliate_tools").upsert({"tool_name": t_name.strip(), "affiliate_link": t_link.strip()}).execute()
+                st.success(f"Link for {t_name} is now live!")
+            else:
+                st.error("Fields cannot be empty.")
+
+    st.subheader("Current Active Links")
+    links = supabase.table("affiliate_tools").select("*").execute()
+    if links.data:
+        for l in links.data:
+            c1, c2, c3 = st.columns([2, 4, 1])
+            c1.write(f"**{l['tool_name']}**")
+            c2.write(l['affiliate_link'])
+            if c3.button("🗑️", key=l['tool_name']):
+                supabase.table("affiliate_tools").delete().eq("tool_name", l['tool_name']).execute()
+                st.rerun()
+
+# --- FEATURE 3: ROADMAP ARCHITECT ---
+elif menu == "Roadmap Architect":
+    st.header("🗺️ Learning Roadmap Architect")
+    st.write("Group tutorials into step-by-step 'Skill Paths' for your users.")
+
+    tab1, tab2 = st.tabs(["Create New Roadmap", "Add Videos to Roadmap"])
+
+    with tab1:
+        r_title = st.text_input("Path Title (e.g., Become an AI Content Creator)")
+        r_desc = st.text_area("Path Description")
+        if st.button("Publish Roadmap"):
+            slug = r_title.lower().replace(" ", "-")
+            supabase.table("roadmaps").insert({
+                "title": r_title, 
+                "description": r_desc, 
+                "slug": slug
+            }).execute()
+            st.success(f"Roadmap '{r_title}' created!")
+
+    with tab2:
+        # Fetch current roadmaps
+        rm_data = supabase.table("roadmaps").select("id, title").execute()
+        if rm_data.data:
+            rm_options = {r['title']: r['id'] for r in rm_data.data}
+            sel_rm = st.selectbox("Select Roadmap", options=list(rm_options.keys()))
+            
+            # Fetch videos to add
+            vid_data = supabase.table("videos").select("video_id, title").execute()
+            vid_options = {v['title']: v['video_id'] for v in vid_data.data}
+            sel_vid = st.selectbox("Select Video to add as a step", options=list(vid_options.keys()))
+            
+            order = st.number_input("Step Order (1, 2, 3...)", min_value=1)
+            task = st.text_input("Task for this step (e.g., Watch this and create your first AI image)")
+
+            if st.button("Add Step to Path"):
+                supabase.table("roadmap_steps").insert({
+                    "roadmap_id": rm_options[sel_rm],
+                    "video_id": vid_options[sel_vid],
+                    "step_order": order,
+                    "task_description": task
+                }).execute()
+                st.success(f"Added '{sel_vid}' as Step {order} to {sel_rm}")
+        else:
+            st.warning("Create a roadmap first.")
+
+# --- FEATURE 4: TUTORIAL LIBRARY ---
+elif menu == "Tutorial Library":
+    st.header("📚 Existing Tutorials")
+    vids = supabase.table("videos").select("video_id, title, category, ai_summary").order("date_added", desc=True).execute()
+    
+    for v in vids.data:
+        with st.container():
+            st.markdown(f"""
+                <div class="report-card">
+                    <h4>{v['title']}</h4>
+                    <p><b>Category:</b> {v['category']} | <b>Tools:</b> {v['ai_summary']}</p>
+                </div>
+            """, unsafe_allow_html=True)
+            if st.button("Delete Video", key=v['video_id']):
+                supabase.table("videos").delete().eq("video_id", v['video_id']).execute()
+                st.rerun()
