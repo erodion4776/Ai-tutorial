@@ -5,7 +5,7 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from googleapiclient.discovery import build
 from supabase import create_client
 
-# Initialize Clients
+# 1. Initialize API Clients from Environment Variables
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 YT_API_KEY = os.getenv("YT_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -16,16 +16,13 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 youtube = build('youtube', 'v3', developerKey=YT_API_KEY)
 
 def extract_video_id(url):
-    """
-    Extracts the video ID from various YouTube URL formats.
-    Handles youtu.be, youtube.com/watch?v=, and youtube.com/embed/
-    """
+    """Handles all YouTube URL formats (Short, Mobile, Desktop, Embed)"""
     pattern = r'(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})'
     match = re.search(pattern, url)
     return match.group(1) if match else None
 
 def get_video_metadata(video_id):
-    """Fetches title and thumbnail from YouTube API"""
+    """Fetches details from YouTube Data API"""
     try:
         request = youtube.videos().list(part="snippet", id=video_id)
         response = request.execute()
@@ -37,18 +34,20 @@ def get_video_metadata(video_id):
                 "description": data['description']
             }
     except Exception as e:
-        print(f"YouTube API Error: {e}")
+        print(f"Metadata Error: {e}")
     return None
 
 def extract_tools_with_ai(text_content):
-    """Uses Groq Llama 3.1 to find tool names in the text"""
+    """Uses Groq Llama 3.1 8B to identify AI software mentioned"""
     if not text_content or len(text_content) < 20:
         return ["AI Tools"]
 
     prompt = f"""
-    Analyze the following text from a YouTube video. 
-    List ONLY the names of AI software, tools, or platforms mentioned (e.g., Midjourney, ChatGPT, ElevenLabs).
-    Format the output as a simple comma-separated list.
+    Analyze the following YouTube transcript/description. 
+    Identify and list ONLY the names of AI tools, software, or platforms mentioned.
+    Format the output as a simple comma-separated list (e.g., ChatGPT, ElevenLabs, Midjourney).
+    If no specific tools are found, return 'AI Software'.
+    
     Text: {text_content[:8000]}
     """
     
@@ -58,41 +57,68 @@ def extract_tools_with_ai(text_content):
             messages=[{"role": "user", "content": prompt}]
         )
         return completion.choices[0].message.content.split(",")
-    except:
+    except Exception as e:
+        print(f"AI Error: {e}")
         return ["AI Tools"]
 
 def process_video(video_url):
+    """The main logic for a single video"""
     try:
-        # 1. Robust ID Extraction
         video_id = extract_video_id(video_url)
         if not video_id:
-            return "❌ Error: Invalid YouTube URL format."
+            return "❌ Invalid URL."
         
-        # 2. Get Metadata
         meta = get_video_metadata(video_id)
         if not meta:
-            return f"❌ Error: Could not find metadata for ID: {video_id}. Check if your YouTube API Key is correct."
+            return "❌ Metadata not found."
         
-        # 3. Get Transcript
+        # Get Transcript (Fallback to description)
         try:
             transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
             text_for_ai = " ".join([t['text'] for t in transcript_list])
         except:
             text_for_ai = meta['description']
 
-        # 4. AI Extraction
+        # AI Tool Extraction
         tools_found = extract_tools_with_ai(text_for_ai)
+        tools_string = ", ".join([t.strip() for t in tools_found])
         
-        # 5. Save to Supabase
+        # Save to Supabase
         supabase.table("videos").upsert({
             "video_id": video_id,
             "title": meta['title'],
             "thumbnail_url": meta['thumbnail'],
             "category": "AI Tutorial",
-            "ai_summary": ", ".join(tools_found)
+            "ai_summary": tools_string
         }).execute()
         
-        return f"✅ Success! Added: {meta['title']}"
+        return f"✅ Added: {meta['title']}"
     
     except Exception as e:
-        return f"❌ System Error: {str(e)}"
+        return f"❌ Error: {str(e)}"
+
+def search_and_bulk_add(keyword, max_results=3):
+    """New Feature: Searches YouTube and processes the top videos automatically"""
+    try:
+        search_query = f"{keyword} AI tutorial"
+        request = youtube.search().list(
+            q=search_query,
+            part="id",
+            type="video",
+            maxResults=max_results,
+            order="relevance"
+        )
+        response = request.execute()
+        
+        video_ids = [item['id']['videoId'] for item in response.get('items', [])]
+        
+        results = []
+        for vid_id in video_ids:
+            # Re-use the process_video logic for each search result
+            url = f"https://www.youtube.com/watch?v={vid_id}"
+            report = process_video(url)
+            results.append(report)
+            
+        return results
+    except Exception as e:
+        return [f"❌ Search Error: {str(e)}"]
