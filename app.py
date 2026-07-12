@@ -36,11 +36,14 @@ if menu == "Discovery & Import":
 
     if st.button("Start Bulk Discovery"):
         if keyword:
-            with st.spinner(f"AI is hunting for '{keyword}' tutorials..."):
-                reports = search_and_bulk_add(keyword, max_results=count)
-                for r in reports:
-                    st.info(r)
-                st.success("Batch Processing Complete!")
+            # search_and_bulk_add is a generator — each status prints as soon as that
+            # video finishes, instead of the UI going silent for minutes and dumping
+            # everything at the end. If a step is genuinely slow (e.g. YouTube blocking
+            # transcript requests from this server's IP), you'll see exactly which
+            # video it's stuck on rather than wondering if it's frozen.
+            status_area = st.container()
+            for update in search_and_bulk_add(keyword, max_results=count):
+                status_area.info(update)
         else:
             st.warning("Please enter a keyword first.")
 
