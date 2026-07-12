@@ -2,5 +2,5 @@ streamlit
 supabase
 groq
 google-api-python-client
-youtube-transcript-api
+youtube-transcript-api>=1.0.0
 python-dotenv
