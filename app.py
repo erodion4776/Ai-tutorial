@@ -27,13 +27,13 @@ menu = st.sidebar.radio("Navigate to:", ["Discovery & Import", "Link Manager", "
 if menu == "Discovery & Import":
     st.header("🔎 Video Discovery & AI Processing")
     st.write("Search YouTube for top tutorials. The AI will categorize, extract tools, and write SEO blogs automatically.")
-    
-    col1, col2 = st.columns([2,1])
+
+    col1, col2 = st.columns([2, 1])
     with col1:
         keyword = st.text_input("Enter Topic Keywords", placeholder="e.g. AI Faceless YouTube Channel")
     with col2:
         count = st.slider("Videos to process", 1, 10, 3)
-    
+
     if st.button("Start Bulk Discovery"):
         if keyword:
             with st.spinner(f"AI is hunting for '{keyword}' tutorials..."):
@@ -60,10 +60,17 @@ elif menu == "Link Manager":
     with st.expander("➕ Add/Update Affiliate Link", expanded=True):
         t_name = st.text_input("Tool Name (e.g. ElevenLabs)")
         t_link = st.text_input("Your Affiliate URL")
+        t_active = st.checkbox("Active (visible on the site)", value=True)
         if st.button("Save to Database"):
             if t_name and t_link:
-                supabase.table("affiliate_tools").upsert({"tool_name": t_name.strip(), "affiliate_link": t_link.strip()}).execute()
-                st.success(f"Link for {t_name} is now live!")
+                # is_active is set explicitly here so a new/updated tool is never
+                # silently hidden by the frontend's `.eq('is_active', true)` filter.
+                supabase.table("affiliate_tools").upsert({
+                    "tool_name": t_name.strip(),
+                    "affiliate_link": t_link.strip(),
+                    "is_active": t_active
+                }).execute()
+                st.success(f"Link for {t_name} is now {'live' if t_active else 'saved but hidden'}!")
             else:
                 st.error("Fields cannot be empty.")
 
@@ -71,10 +78,11 @@ elif menu == "Link Manager":
     links = supabase.table("affiliate_tools").select("*").execute()
     if links.data:
         for l in links.data:
-            c1, c2, c3 = st.columns([2, 4, 1])
+            c1, c2, c3, c4 = st.columns([2, 4, 1, 1])
             c1.write(f"**{l['tool_name']}**")
             c2.write(l['affiliate_link'])
-            if c3.button("🗑️", key=l['tool_name']):
+            c3.write("🟢" if l.get("is_active") else "⚪")
+            if c4.button("🗑️", key=l['tool_name']):
                 supabase.table("affiliate_tools").delete().eq("tool_name", l['tool_name']).execute()
                 st.rerun()
 
@@ -88,14 +96,21 @@ elif menu == "Roadmap Architect":
     with tab1:
         r_title = st.text_input("Path Title (e.g., Become an AI Content Creator)")
         r_desc = st.text_area("Path Description")
+        r_image = st.text_input("Cover Image URL (optional)")
         if st.button("Publish Roadmap"):
-            slug = r_title.lower().replace(" ", "-")
-            supabase.table("roadmaps").insert({
-                "title": r_title, 
-                "description": r_desc, 
-                "slug": slug
-            }).execute()
-            st.success(f"Roadmap '{r_title}' created!")
+            if r_title:
+                slug = r_title.lower().strip().replace(" ", "-")
+                payload = {
+                    "title": r_title,
+                    "description": r_desc,
+                    "slug": slug
+                }
+                if r_image:
+                    payload["image_url"] = r_image
+                supabase.table("roadmaps").insert(payload).execute()
+                st.success(f"Roadmap '{r_title}' created!")
+            else:
+                st.error("Path Title is required.")
 
     with tab2:
         # Fetch current roadmaps
@@ -103,23 +118,26 @@ elif menu == "Roadmap Architect":
         if rm_data.data:
             rm_options = {r['title']: r['id'] for r in rm_data.data}
             sel_rm = st.selectbox("Select Roadmap", options=list(rm_options.keys()))
-            
+
             # Fetch videos to add
             vid_data = supabase.table("videos").select("video_id, title").execute()
             vid_options = {v['title']: v['video_id'] for v in vid_data.data}
-            sel_vid = st.selectbox("Select Video to add as a step", options=list(vid_options.keys()))
-            
-            order = st.number_input("Step Order (1, 2, 3...)", min_value=1)
-            task = st.text_input("Task for this step (e.g., Watch this and create your first AI image)")
+            if vid_options:
+                sel_vid = st.selectbox("Select Video to add as a step", options=list(vid_options.keys()))
 
-            if st.button("Add Step to Path"):
-                supabase.table("roadmap_steps").insert({
-                    "roadmap_id": rm_options[sel_rm],
-                    "video_id": vid_options[sel_vid],
-                    "step_order": order,
-                    "task_description": task
-                }).execute()
-                st.success(f"Added '{sel_vid}' as Step {order} to {sel_rm}")
+                order = st.number_input("Step Order (1, 2, 3...)", min_value=1)
+                task = st.text_input("Task for this step (e.g., Watch this and create your first AI image)")
+
+                if st.button("Add Step to Path"):
+                    supabase.table("roadmap_steps").insert({
+                        "roadmap_id": rm_options[sel_rm],
+                        "video_id": vid_options[sel_vid],
+                        "step_order": order,
+                        "task_description": task
+                    }).execute()
+                    st.success(f"Added '{sel_vid}' as Step {order} to {sel_rm}")
+            else:
+                st.warning("No videos in the library yet — add some in Discovery & Import first.")
         else:
             st.warning("Create a roadmap first.")
 
@@ -127,15 +145,18 @@ elif menu == "Roadmap Architect":
 elif menu == "Tutorial Library":
     st.header("📚 Existing Tutorials")
     vids = supabase.table("videos").select("video_id, title, category, ai_summary").order("date_added", desc=True).execute()
-    
-    for v in vids.data:
-        with st.container():
-            st.markdown(f"""
-                <div class="report-card">
-                    <h4>{v['title']}</h4>
-                    <p><b>Category:</b> {v['category']} | <b>Tools:</b> {v['ai_summary']}</p>
-                </div>
-            """, unsafe_allow_html=True)
-            if st.button("Delete Video", key=v['video_id']):
-                supabase.table("videos").delete().eq("video_id", v['video_id']).execute()
-                st.rerun()
+
+    if not vids.data:
+        st.info("No tutorials yet. Add some in Discovery & Import.")
+    else:
+        for v in vids.data:
+            with st.container():
+                st.markdown(f"""
+                    <div class="report-card">
+                        <h4>{v['title']}</h4>
+                        <p><b>Category:</b> {v['category']} | <b>Tools:</b> {v['ai_summary']}</p>
+                    </div>
+                """, unsafe_allow_html=True)
+                if st.button("Delete Video", key=v['video_id']):
+                    supabase.table("videos").delete().eq("video_id", v['video_id']).execute()
+                    st.rerun()
