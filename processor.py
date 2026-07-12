@@ -118,7 +118,10 @@ def generate_seo_blog(transcript, title):
     Title: {title}
 
     Requirements:
-    - Use Markdown formatting (## for headers).
+    - Use Markdown formatting with plain "## " headers only — no numbering, no emoji,
+      no numbered emoji (e.g. write "## Key Takeaways", never "## 2️⃣ Key Takeaways").
+    - Use standard Markdown for lists ("- " for bullets), bold ("**text**"), and
+      paragraphs (blank line between them). No decorative symbols anywhere.
     - Section 1: Introduction (The Problem & Solution).
     - Section 2: Key Takeaways (Bulleted list).
     - Section 3: Step-by-Step Tutorial (Detailed guide).
