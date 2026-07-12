@@ -17,6 +17,11 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 youtube = build('youtube', 'v3', developerKey=YT_API_KEY)
 
+# Prints on every startup/redeploy — compare this URL against Supabase's
+# Project Settings -> API -> Project URL to catch an env var pointing at the
+# wrong project before it silently causes "processed but nowhere to be found".
+print(f"[startup] Connected Supabase project: {SUPABASE_URL}")
+
 # Groq model IDs — kept in one place so future migrations only need a one-line change.
 # llama-3.1-70b-versatile was decommissioned Jan 2025 (hard error if used).
 # llama-3.1-8b-instant / llama-3.3-70b-versatile were announced deprecated June 17, 2026.
@@ -42,10 +47,9 @@ def get_transcript_with_timeout(video_id, timeout_seconds=10):
     falls back to the video description, instead of stalling the whole batch.
     """
     with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(YouTubeTranscriptApi.get_transcript, video_id)
+        future = executor.submit(_fetch_transcript_text, video_id)
         try:
-            transcript_list = future.result(timeout=timeout_seconds)
-            return " ".join([t['text'] for t in transcript_list])
+            return future.result(timeout=timeout_seconds)
         except FutureTimeoutError:
             print(f"Transcript fetch timed out after {timeout_seconds}s for {video_id} "
                   f"(likely YouTube blocking this server's IP) — falling back to description.")
@@ -53,6 +57,17 @@ def get_transcript_with_timeout(video_id, timeout_seconds=10):
         except Exception as e:
             print(f"Transcript fetch error for {video_id}: {e}")
             return None
+
+
+def _fetch_transcript_text(video_id):
+    """
+    youtube-transcript-api v1.x removed the old static get_transcript() method.
+    It now requires an instance, and .fetch() returns a FetchedTranscript object
+    (iterable of snippet objects with a .text attribute) instead of a list of dicts.
+    """
+    ytt_api = YouTubeTranscriptApi()
+    fetched = ytt_api.fetch(video_id)
+    return " ".join(snippet.text for snippet in fetched)
 
 
 def get_video_metadata(video_id):
@@ -163,7 +178,7 @@ def process_video(video_url):
 
         # Save to Supabase — date_added set explicitly so ordering never depends
         # on a DB-side default silently not being configured.
-        supabase.table("videos").upsert({
+        result = supabase.table("videos").upsert({
             "video_id": video_id,
             "title": meta['title'],
             "thumbnail_url": meta['thumbnail'],
@@ -173,9 +188,18 @@ def process_video(video_url):
             "date_added": datetime.now(timezone.utc).isoformat()
         }).execute()
 
+        # Don't trust "no exception raised" as proof of success — some client/error
+        # combinations return without throwing. Verify a row actually came back.
+        print(f"Supabase upsert response for {video_id}: {result}")
+        if not getattr(result, "data", None):
+            return (f"❌ Upsert returned no data for {meta['title']} — the write likely "
+                     f"did not happen. Check SUPABASE_URL on Render matches your Supabase "
+                     f"project, and check Render logs for the full response.")
+
         return f"✅ Successfully Hubbed: {meta['title']} in {cat}"
 
     except Exception as e:
+        print(f"process_video error: {e}")
         return f"❌ System Error: {str(e)}"
 
 
