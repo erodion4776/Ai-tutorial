@@ -1,6 +1,7 @@
 import os
 import re
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from groq import Groq
 from youtube_transcript_api import YouTubeTranscriptApi
 from googleapiclient.discovery import build
@@ -28,6 +29,30 @@ def extract_video_id(url):
     pattern = r'(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})'
     match = re.search(pattern, url)
     return match.group(1) if match else None
+
+
+def get_transcript_with_timeout(video_id, timeout_seconds=10):
+    """
+    YouTube frequently blocks transcript requests coming from datacenter/cloud IPs
+    (Streamlit Cloud, Render, etc). When blocked, the underlying library can hang or
+    retry for a long time with no built-in timeout, which is what causes bulk search
+    to appear stuck for minutes instead of seconds.
+
+    This wraps the call in a hard timeout so a blocked/slow request gives up fast and
+    falls back to the video description, instead of stalling the whole batch.
+    """
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(YouTubeTranscriptApi.get_transcript, video_id)
+        try:
+            transcript_list = future.result(timeout=timeout_seconds)
+            return " ".join([t['text'] for t in transcript_list])
+        except FutureTimeoutError:
+            print(f"Transcript fetch timed out after {timeout_seconds}s for {video_id} "
+                  f"(likely YouTube blocking this server's IP) — falling back to description.")
+            return None
+        except Exception as e:
+            print(f"Transcript fetch error for {video_id}: {e}")
+            return None
 
 
 def get_video_metadata(video_id):
@@ -124,11 +149,9 @@ def process_video(video_url):
         if not meta:
             return "❌ No Metadata found"
 
-        # Get Transcript
-        try:
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-            text_for_ai = " ".join([t['text'] for t in transcript_list])
-        except Exception:
+        # Get Transcript — hard-timeout guarded, see get_transcript_with_timeout()
+        text_for_ai = get_transcript_with_timeout(video_id, timeout_seconds=10)
+        if not text_for_ai:
             text_for_ai = meta['description']
 
         # Run AI Steps
@@ -154,16 +177,32 @@ def process_video(video_url):
 
 
 def search_and_bulk_add(keyword, max_results=3):
-    """Discovery Feature: Auto-builds your site based on keywords"""
+    """
+    Discovery Feature: Auto-builds your site based on keywords.
+
+    This is a generator — it yields a status string after each video finishes
+    processing, instead of silently working for minutes and returning one final
+    list. app.py should iterate over this and print each yielded status as it
+    arrives, so bulk search never looks frozen.
+    """
     try:
         search_query = f"{keyword} AI tutorial"
         request = youtube.search().list(q=search_query, part="id", type="video", maxResults=max_results)
         response = request.execute()
-
         ids = [item['id']['videoId'] for item in response.get('items', [])]
-        for vid_id in ids:
-            process_video(f"https://www.youtube.com/watch?v={vid_id}")
-
-        return [f"✅ Successfully added {len(ids)} videos for topic: {keyword}"]
     except Exception as e:
-        return [f"❌ Search Error: {str(e)}"]
+        yield f"❌ Search Error: {str(e)}"
+        return
+
+    if not ids:
+        yield f"⚠️ No videos found for topic: {keyword}"
+        return
+
+    yield f"🔎 Found {len(ids)} videos for '{keyword}' — processing one by one..."
+
+    for i, vid_id in enumerate(ids, start=1):
+        yield f"⏳ ({i}/{len(ids)}) Processing https://www.youtube.com/watch?v={vid_id} ..."
+        result = process_video(f"https://www.youtube.com/watch?v={vid_id}")
+        yield f"({i}/{len(ids)}) {result}"
+
+    yield f"✅ Finished processing {len(ids)} videos for topic: {keyword}"
